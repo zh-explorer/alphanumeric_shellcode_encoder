@@ -1,7 +1,11 @@
 from encoder import util
+from .shellcode_template import Shellcode, FastNumGen
 import typing
 
 import pwn
+
+IdxList = typing.List[int]
+EncBlock = typing.Tuple[int, IdxList]
 
 
 class Encoder(object):
@@ -9,6 +13,55 @@ class Encoder(object):
         self.base_reg = base_reg
         self.offset = offset
         self.shellcode = shellcode
+        self.origin_shellcode = shellcode
+
+    def one_byte_xor_strategy1(self, enc_block: EncBlock) -> typing.Tuple[bytearray, EncBlock, Shellcode, int]:
+        enc_shellcode = bytearray(self.shellcode)
+        off = enc_block[0]
+        idx_list = enc_block[1]
+        enc_bytes = [self.shellcode[off + i] for i in idx_list]
+        xor_map = self.find_max_match(enc_bytes)
+
+        idx_map: typing.Dict[int, typing.List[int]] = {}
+
+        for i in idx_list:
+            xor_data = xor_map[self.shellcode[off + i]]
+            if xor_data in idx_map:
+                idx_map[xor_data].append(i)
+            else:
+                idx_map[xor_data] = [i]
+
+        xor_list = [(key, value) for key, value in idx_map.items()]
+        xor_list.sort(key=lambda x: len(x[1]))
+
+        # select the max two
+        low_data = xor_list[0][0]
+        low_enc_idx = xor_list[0][1]
+        if len(xor_list) > 1:
+            high_data = xor_list[1][0]
+            high_enc_idx = xor_list[1][1]
+        else:
+            high_data = 0
+            high_enc_idx = []
+
+        enc_bytes_count = len(low_enc_idx) + len(high_enc_idx)
+
+        # first gen data
+        data = low_data + (high_data << 16)
+        shellcode = ''
+        shellcode += FastNumGen(data=data)
+        for idx in low_enc_idx:
+            shellcode += "xor [rdx+rsi+{idx:#x}], al".format(idx=idx)
+            idx_list.remove(idx)
+            enc_shellcode ^= low_data
+        for idx in high_enc_idx:
+            shellcode += "xor [rdx+rsi+{idx:#x}], ah".format(idx=idx)
+            idx_list.remove(idx)
+            enc_shellcode ^= high_data
+
+        shellcode_len = util.asm(shellcode)
+        score = shellcode_len / enc_bytes_count
+        return enc_shellcode, (off, idx_list), shellcode_len, score
 
     def data_scan(self):
         need_enc = []
@@ -21,7 +74,7 @@ class Encoder(object):
             i += 1
         return need_enc
 
-    def split_enc_idx(self):
+    def split_enc_idx(self) -> typing.List[typing.Tuple[int, IdxList]]:
         need_enc = self.data_scan()
         enc_blocks = []
 

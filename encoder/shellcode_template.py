@@ -3,6 +3,7 @@ from functools import cached_property
 
 
 class Shellcode(object):
+
     @cached_property
     def asm(self):
         return util.asm(str(self))
@@ -228,3 +229,59 @@ xor {reg}, {xor:#x}
             if util.is_alphanumeric((i[0] * i[1] & 0xffff) ^ data, 2):
                 return i[0], i[1], (i[0] * i[1] & 0xffff) ^ data
         return None
+
+
+class CodeInit(Shellcode):
+    @cached_property
+    def code(self):
+        code = ''
+
+        mul1, mul2 = MulReg.find_mul(0x8080)
+        code += MulReg(mul1=mul1, mul2=mul2)
+        code += Mov(src="rdi", dst="r8")
+
+        mul1, mul2 = MulReg.find_mul(0x8010)
+        code += MulReg(mul1=mul1, mul2=mul2)
+        code += Mov(src="rdi", dst="r9")
+
+        mul1, mul2 = MulReg.find_mul(0x0080)
+        code += MulReg(mul1=mul1, mul2=mul2)
+        code += Mov(src="rdi", dst="r10")
+        return code
+
+
+class FastNumGen(Shellcode):
+    reg_map = {1: "al", 2: "ax"}
+
+    def __init__(self, data: int):
+        assert util.num_size(data) <= 2
+        self.data = data
+
+    @cached_property
+    def code(self):
+        if self.data & 0x8080 == 0x8080:
+            src_reg = "r8"
+            src_num = 0x8080
+        elif self.data & 0x8000 == 0x8000:
+            src_reg = "r9"
+            src_num = 0x8010
+        elif self.data & 0x0080 == 0x0080:
+            src_reg = "r10"
+            src_num = 0x0080
+        else:
+            xor1, xor2 = XorReg.find_xor(self.data)
+            return str(XorReg(xor1=xor1, xor2=xor2))
+
+        code = ''
+        code += Mov(src=src_reg, dst="rax")
+
+        xor_num = self.data ^ src_num
+        if xor_num < 0x80 and util.is_alphanumeric(xor_num, 1):
+            code += f"xor al, {xor_num}"
+        elif util.is_alphanumeric(xor_num, 2):
+            code += f"xor ax, {xor_num}"
+        else:
+            xor1, xor2 = XorReg.find_xor(self.data)
+            code += f"xor {self.reg_map[util.num_size(xor1)]}, {xor1}"
+            code += f"xor {self.reg_map[util.num_size(xor2)]}, {xor2}"
+        return code
