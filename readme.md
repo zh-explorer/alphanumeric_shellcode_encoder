@@ -14,3 +14,5 @@ if __name__ == '__main__':
 3. offset can be negative or any other number's, but a too large number will increase the length of shellcode
 
 4. to use this encoder, the rsp must point to stack or other r/w memory that not overlap shellcode itself 
+
+5. There is a shorter but unstable version in branch dev
