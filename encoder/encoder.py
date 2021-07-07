@@ -36,8 +36,8 @@ class Encoder(object):
                     all_shellcode += MulReg(mul1=mul1, mul2=mul2, dst="si")
                     all_shellcode += shellcode
             asm_code = util.asm(all_shellcode)
-            print(f"we try offset: {shift_offset}")
-            print(f"the shellcode length: {len(asm_code)}")
+            # print(f"we try offset: {shift_offset}")
+            # print(f"the shellcode length: {len(asm_code)}")
             if len(asm_code) < shift_offset:
                 break
             inc_count = (len(asm_code) - shift_offset) // 5
@@ -291,6 +291,4 @@ def encode(shellcode: bytes, base_reg, offset=0):
     pwn.log.progress("shellcode is generating, plz wait")
     shellcode1 = encoder_direct(shellcode, base_reg, offset)
     shellcode2 = encoder_with_xor_compress(shellcode, base_reg, offset)
-    print(len(shellcode1))
-    print(len(shellcode2))
     return shellcode1 if len(shellcode1) < len(shellcode2) else shellcode2
