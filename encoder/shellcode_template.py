@@ -62,7 +62,7 @@ xor {dst}, [{tmp}+0x30]
                 tmp = "rdx"
             else:
                 tmp = "rcx"
-            return self.stack_mov2.format(src=self.src, dst=self.dst, tmp=tmp)
+            return self.stack_mov3.format(src=self.src, dst=self.dst, tmp=tmp)
         else:
             raise Exception(f"can't mov to reg {self.dst}")
 
@@ -113,7 +113,7 @@ imul {dst}, WORD PTR [{tmp}], {mul2:#x}
             raise Exception("the src reg must in rcx, rax, r8, r9")
         self.dst = dst
         self.modify_reg = modify_reg
-        self.mul1, self.mul2 = mul1, mul2 if mul1 < mul2 else (mul2, mul1)
+        self.mul1, self.mul2 = (mul1, mul2) if mul1 < mul2 else (mul2, mul1)
 
         mul2_size = util.num_size(self.mul2)
         mul1_size = util.num_size(self.mul1)
@@ -236,6 +236,9 @@ class CodeInit(Shellcode):
     def code(self):
         code = ''
 
+        code += Zero("rdi")
+        code += Zero("rsi")
+
         mul1, mul2 = MulReg.find_mul(0x8080)
         code += MulReg(mul1=mul1, mul2=mul2)
         code += Mov(src="rdi", dst="r8")
@@ -276,12 +279,227 @@ class FastNumGen(Shellcode):
         code += Mov(src=src_reg, dst="rax")
 
         xor_num = self.data ^ src_num
-        if xor_num < 0x80 and util.is_alphanumeric(xor_num, 1):
-            code += f"xor al, {xor_num}"
+        if xor_num == 0:
+            pass
+        elif xor_num < 0x80 and util.is_alphanumeric(xor_num, 1):
+            code += f"xor al, {xor_num}\n"
         elif util.is_alphanumeric(xor_num, 2):
-            code += f"xor ax, {xor_num}"
+            code += f"xor ax, {xor_num}\n"
         else:
-            xor1, xor2 = XorReg.find_xor(self.data)
-            code += f"xor {self.reg_map[util.num_size(xor1)]}, {xor1}"
-            code += f"xor {self.reg_map[util.num_size(xor2)]}, {xor2}"
+            xor1, xor2 = XorReg.find_xor(xor_num)
+            code += f"xor {self.reg_map[util.num_size(xor1)]}, {xor1}\n"
+            code += f"xor {self.reg_map[util.num_size(xor2)]}, {xor2}\n"
         return code
+
+
+class NumGen(Shellcode):
+    def __init__(self, data: int):
+        self.data = data
+
+    @cached_property
+    def code(self):
+        data_words = []
+        data = self.data
+        for i in range(4):
+            data_words.append((data & 0xffff, i))
+            data = data >> 16
+        data_words.sort()
+        shellcode = ''
+        # set rcx == rsp
+        shellcode += '''
+push rsp
+pop rcx
+'''
+        shellcode += Zero("rax")
+
+        shellcode += '''    
+xor rax, [rcx+0x30]
+xor [rcx+0x30], rax
+'''
+
+        # TODO: this can be optimize
+        prev_number = None
+        for i in data_words:
+            if i[0] != 0:
+                if prev_number != i[0]:
+                    shellcode += AutoNumGen(data=i[0])
+                prev_number = i[0]
+                shellcode += 'xor [rcx+0x%x], ax\n' % (i[1] * 2 + 0x30)
+
+        shellcode += "xor [rcx+0x30], rax\n"
+        shellcode += "xor rax, [rcx+0x30]\n"
+
+        return shellcode
+
+
+# set 64bit data to rax with shortest length
+class AutoNumGen(Shellcode):
+    neg_init = False
+
+    def __init__(self, data: int):
+        assert -0x7fffffffffffffff <= data < 0x10000000000000000
+        self.number = data
+
+    @cached_property
+    def code(self):
+        shellcode = ''
+        if self.number == 0:
+            shellcode += Zero("rax")
+        elif 0 < self.number < 0x80:
+            if self.number in util.alphanum_pool:
+                shellcode += """
+push {num:#x}
+pop rax
+""".format(num=self.number)
+            else:
+                xor1, xor2 = XorReg.find_xor(self.number)
+                shellcode += XorReg(xor1=xor1, xor2=xor2)
+        elif 0x80 <= self.number <= 0xffff:
+            shellcode += FastNumGen(self.number)
+        elif self.number >= 0x10000:
+            shellcode += NumGen(self.number)
+        elif self.number < 0:
+            if not AutoNumGen.neg_init:
+                shellcode += NumGen(0xffffffffffffffff)
+                shellcode += Mov(src="rax", dst="r15")
+                AutoNumGen.neg_init = True
+            num = 0xffffffffffffffff ^ (0x10000000000000000 + self.number)
+            if self.number <= 0xffff:
+                shellcode += FastNumGen(num)
+            else:
+                shellcode += NumGen(num)
+
+            shellcode += '''
+push rsp
+pop rcx
+push r15
+pop rdx
+'''
+            shellcode += '''
+xor rdx, [rcx+0x30]
+xor [rcx+0x30], rdx
+xor rax, [rcx+0x30]
+'''
+        return shellcode
+
+
+class Padding(Shellcode):
+    padding = '''
+push rax
+pop rax
+'''
+
+    def __init__(self, size):
+        self.size = size
+
+    @cached_property
+    def code(self):
+        shellcode = ''
+        shellcode += self.padding * (self.size // 2)
+        if self.size % 2 == 1:
+            shellcode += "push rax\n"
+        return shellcode
+
+
+class ShellCodeXor(Shellcode):
+    def __init__(self, code_length):
+        self.code_length = code_length
+
+    @cached_property
+    def code(self):
+        xor_encoder_template = ''
+
+        xor_encoder_template += str(AutoNumGen(self.code_length))
+        xor_encoder_template += '''
+    push rax
+    pop rcx
+    '''
+
+        xor_encoder_template += '''
+    / save rsp t0 r9
+    push rsp
+    pop r9
+    
+    push 0x30
+    pop rax
+    xor al, 0x30
+    xor rax, [r9+0x30]
+    xor [r9+0x30], rax
+    lea rsp, [rip + data + 8]
+    xor [r9+0x30], rsp  # we save rsp addr to [r9+0x30]
+    
+xor_loop:
+    pop rax
+    imul rax, rax, 16
+    
+    / clean rsi
+    push rsi
+    push rsp
+    pop rdx
+    xor rsi, [rdx]
+    pop r8
+    
+    / mov rsi, rax
+    push rax
+    xor rsi, [rdx]
+    pop r8
+    
+    / mov rsp, rdx
+    push rsp
+    pop rdx
+    
+    xor rsi, [rdx]
+    pop rax
+    
+    / xarg rsp, [r9+0x30]
+    xor rsp, [r9+0x30]
+    xor [r9+0x30], rsp
+    xor rsp, [r9+0x30]
+    
+    / save data to [r9+0x30] 
+    push rsi
+    pop rax
+    pop rax
+    
+    / xarg rsp, [r9+0x30]
+    xor rsp, [r9+0x30]
+    xor [r9+0x30], rsp
+    xor rsp, [r9+0x30]
+    
+    loop xor_loop
+    
+data:
+'''
+        return xor_encoder_template
+
+    @staticmethod
+    def shellcode_xor(shellcode: bytes):
+        enc_code = b"a" * 8
+        shellcode = util.asm("mov rsp, r9") + shellcode + b"\x90" * 8
+        for i in range(len(shellcode) // 8):
+            data = shellcode[:8]
+            shellcode = shellcode[8:]
+            c1, c2 = ShellCodeXor.shift_xor(data)
+            enc_code += c1 + c2
+        return enc_code
+
+    @staticmethod
+    def shift_xor(data: bytes):
+        assert len(data) == 8
+
+        def get_code(low_8bit):
+            return next(filter(lambda x: x & 0xf == low_8bit, util.alphanum_pool))
+
+        code_array1 = []
+        code_array2 = []
+        init_num = 0
+        for i in range(8):
+            b = (data[i] ^ init_num) & 0xf
+            code = get_code(b)
+            code_array1.append(code)
+            b2 = (data[i] ^ code) >> 4
+            code2 = get_code(b2)
+            code_array2.append(code2)
+            init_num = code2 >> 4
+
+        return bytes(code_array2), bytes(code_array1)
