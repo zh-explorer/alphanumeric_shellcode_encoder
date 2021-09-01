@@ -6,6 +6,7 @@ import pwn
 
 IdxList = typing.List[int]
 EncBlock = typing.Tuple[int, IdxList]
+log_process = None
 
 
 class Encoder(object):
@@ -40,6 +41,12 @@ class Encoder(object):
             # print(f"the shellcode length: {len(asm_code)}")
             if len(asm_code) < shift_offset:
                 break
+
+            global log_process
+            if log_process is not None:
+                process_num = round((shift_offset / len(asm_code)) * 100)
+                log_process.status(f" ({process_num}%)")
+
             inc_count = (len(asm_code) - shift_offset) // 5
             if inc_count == 0:
                 inc_count = 1
@@ -288,7 +295,11 @@ def encoder_direct(shellcode: bytes, base_reg, offset=0):
 
 
 def encode(shellcode: bytes, base_reg, offset=0):
-    pwn.log.progress("shellcode is generating, plz wait")
+    global log_process
+    log_process = pwn.log.progress("shellcode is generating step(1/2), plz wait")
     shellcode1 = encoder_direct(shellcode, base_reg, offset)
+    log_process.success()
+    log_process = pwn.log.progress("shellcode is generating step(2/2), plz wait")
     shellcode2 = encoder_with_xor_compress(shellcode, base_reg, offset)
+    log_process.success()
     return shellcode1 if len(shellcode1) < len(shellcode2) else shellcode2
